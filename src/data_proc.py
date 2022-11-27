@@ -35,7 +35,14 @@ class DataProc(torch.utils.data.Dataset):
     def random_sample(self,i,item):
         n_samples = num_samples
         data = self.data_dict[i][item]
-        assert data.shape[1] >= n_samples
-        rand_i = random.randint(0,data.shape[1]-n_samples)
-        data = data[:,rand_i:rand_i+n_samples]
+            # print(data.shape, n_samples, "1")
+        padding = n_samples - data.shape[1]
+        # Pad
+        if padding > 0:
+            m = torch.nn.ZeroPad2d((0, padding, 0, 0))
+            data = m(torch.from_numpy(data)).numpy()
+        # assert data.shape[1] >= n_samples
+        else:
+            rand_i = random.randint(0,data.shape[1]-n_samples)
+            data = data[:,rand_i:rand_i+n_samples]
         return np.array([data])

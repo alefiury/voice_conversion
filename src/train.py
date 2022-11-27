@@ -1,20 +1,70 @@
-import argparse
 import os
-import numpy as np
+import argparse
 import itertools
-import sys
-from tqdm import tqdm
 
-from torch.utils.data import DataLoader
+import torch
+import wandb
+import numpy as np
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 from torch.autograd import Variable
 
 from models import *
 from data_proc import DataProc
 
-import torch.nn as nn
-import torch.nn.functional as F
-import torch
 
+def plot_batch_train(modelname, direction, curr_epoch, SRC, cyclic_SRC, fake_TRGT, real_TRGT):
+    SRC, cyclic_SRC, fake_TRGT, real_TRGT = to_numpy(SRC), to_numpy(cyclic_SRC), to_numpy(fake_TRGT), to_numpy(real_TRGT)
+    i = 1
+    for src, cyclic_src, fake_target, real_target in zip(SRC, cyclic_SRC, fake_TRGT, real_TRGT):
+        fname = "out_train/%s/%s_%02d_%s.png"%(modelname, direction, curr_epoch, i)
+        os.makedirs(os.path.dirname(fname), exist_ok=True)
+        plot_mel_transfer_train(fname, curr_epoch, src, cyclic_src, fake_target, real_target)
+        wandb.log({direction: wandb.Image(fname)})
+        i += 1
+
+
+def to_numpy(batch):
+    batch = batch.detach().cpu().numpy()
+    batch = np.squeeze(batch)
+    return batch
+
+
+def plot_mel_transfer_train(save_path, curr_epoch, mel_in, mel_cyclic, mel_out, mel_target):
+    """Visualises melspectrogram style transfer in training, with target specified"""
+    fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(6, 6))
+
+    ax[0,0].imshow(mel_in, interpolation="None")
+    ax[0,0].invert_yaxis()
+    ax[0,0].set(title='Input')
+    ax[0,0].set_ylabel('Mels')
+    ax[0,0].axes.xaxis.set_ticks([])
+    ax[0,0].axes.xaxis.set_ticks([])
+
+    ax[1,0].imshow(mel_cyclic, interpolation="None")
+    ax[1,0].invert_yaxis()
+    ax[1,0].set(title='Cyclic Reconstruction')
+    ax[1,0].set_xlabel('Frames')
+    ax[1,0].set_ylabel('Mels')
+
+    ax[0,1].imshow(mel_out, interpolation="None")
+    ax[0,1].invert_yaxis()
+    ax[0,1].set(title='Output')
+    ax[0,1].axes.yaxis.set_ticks([])
+    ax[0,1].axes.xaxis.set_ticks([])
+
+    ax[1,1].imshow(mel_target, interpolation="None")
+    ax[1,1].invert_yaxis()
+    ax[1,1].set(title='Target')
+    ax[1,1].set_xlabel('Frames')
+    ax[1,1].axes.yaxis.set_ticks([])
+
+    fig.suptitle('Epoch ' + str(curr_epoch))
+    plt.savefig(save_path)
+    plt.close()
+
+
+wandb.login()
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--epoch", type=int, default=0, help="epoch to start training from")
@@ -35,9 +85,20 @@ parser.add_argument("--sample_interval", type=int, default=100, help="interval b
 parser.add_argument("--checkpoint_interval", type=int, default=1, help="interval between saving model checkpoints")
 parser.add_argument("--n_downsample", type=int, default=2, help="number downsampling layers in encoder")
 parser.add_argument("--dim", type=int, default=32, help="number of filters in first encoder layer")
+parser.add_argument("--logging", type=bool, default=True, help="Wandb Logging")
+parser.add_argument("--plot_interval", type=int, default=-1, help="interval between saving mel spectogram samples")
 
 opt = parser.parse_args()
 print(opt)
+
+run = wandb.init(
+    project="voice_conversion",
+    config=opt,
+    mode=None if opt.logging else "disabled"
+)
+
+wandb.run.name = opt.model_name
+wandb.run.save()
 
 cuda = True if torch.cuda.is_available() else False
 
@@ -55,7 +116,7 @@ shared_dim = opt.dim * 2 ** opt.n_downsample
 
 # Initialize generator and discriminator
 shared_E = ResidualBlock(features=shared_dim)
-encoder = Encoder(dim=opt.dim, in_channels=opt.channels, n_downsample=opt.n_downsample, shared_block=shared_E)
+encoder = Encoder(dim=opt.dim, in_channels=opt.channels, n_downsample=opt.n_downsample)
 shared_G = ResidualBlock(features=shared_dim)
 G1 = Generator(dim=opt.dim, out_channels=opt.channels, n_upsample=opt.n_downsample, shared_block=shared_G)
 G2 = Generator(dim=opt.dim, out_channels=opt.channels, n_upsample=opt.n_downsample, shared_block=shared_G)
@@ -132,6 +193,14 @@ def compute_kl(mu):
 # ----------
 #  Training
 # ----------
+
+wandb.watch(G1)
+wandb.watch(G2)
+
+wandb.watch(D1)
+wandb.watch(D2)
+
+wandb.watch(encoder)
 
 for epoch in range(opt.epoch, opt.n_epochs):
     losses = {'G': [],'D': []}
@@ -234,8 +303,10 @@ for epoch in range(opt.epoch, opt.n_epochs):
         losses['G'].append(loss_G.item())
         losses['D'].append((loss_D1 + loss_D2).item())
 
-        # update progress bar
+        wandb.log({"G_loss": loss_G.item()})
+        wandb.log({"D_loss": (loss_D1 + loss_D2).item()})
 
+        # update progress bar
         progress.set_description("[Epoch %d/%d] [D loss: %f] [G loss: %f] "
             % (epoch,opt.n_epochs,np.mean(losses['D']), np.mean(losses['G'])))
 
@@ -244,6 +315,8 @@ for epoch in range(opt.epoch, opt.n_epochs):
     lr_scheduler_D1.step()
     lr_scheduler_D2.step()
 
+    wandb.log({"epoch": epoch})
+
     if opt.checkpoint_interval != -1 and epoch % opt.checkpoint_interval == 0:
         # Save model checkpoints
         torch.save(encoder.state_dict(), "saved_models/%s/encoder_%d.pth" % (opt.model_name, epoch))
@@ -251,3 +324,8 @@ for epoch in range(opt.epoch, opt.n_epochs):
         torch.save(G2.state_dict(), "saved_models/%s/G2_%d.pth" % (opt.model_name, epoch))
         torch.save(D1.state_dict(), "saved_models/%s/D1_%d.pth" % (opt.model_name, epoch))
         torch.save(D2.state_dict(), "saved_models/%s/D2_%d.pth" % (opt.model_name, epoch))
+
+    # Plot first batch every epoch or few epochs
+    if opt.plot_interval != -1 and (epoch+1) % opt.plot_interval == 0:
+        plot_batch_train(opt.model_name, "A-B", epoch, X1, cycle_X1, fake_X2, X2)
+        plot_batch_train(opt.model_name, "B-A", epoch, X2, cycle_X2, fake_X1, X1)
