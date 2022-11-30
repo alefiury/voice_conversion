@@ -21,8 +21,10 @@ except:
 
 int16_max = (2 ** 15) - 1
 
-def preprocess_wav(fpath_or_wav: Union[str, Path, np.ndarray],
-                   source_sr: Optional[int] = None):
+def preprocess_wav(
+    fpath_or_wav: Union[str, Path, np.ndarray],
+    source_sr: Optional[int] = None
+):
     """
     Applies the preprocessing operations used in training the Speaker Encoder to a waveform
     either on disk or in memory. The waveform will be resampled to match the data hyperparameters.
@@ -44,63 +46,7 @@ def preprocess_wav(fpath_or_wav: Union[str, Path, np.ndarray],
     if source_sr is not None and source_sr != sample_rate:
         wav = librosa.resample(wav, source_sr, sample_rate)
 
-    # Apply the preprocessing: normalize volume and shorten long silences
-    wav = normalize_volume(wav, audio_norm_target_dBFS, increase_only=True)
-    if webrtcvad:
-        wav = trim_long_silences(wav)
-
     return wav
-
-def trim_long_silences(wav):
-    """
-    Ensures that segments without voice in the waveform remain no longer than a
-    threshold determined by the VAD parameters in params.py.
-
-    :param wav: the raw waveform as a numpy array of floats
-    :return: the same waveform with silences trimmed away (length <= original wav length)
-    """
-    # Compute the voice detection window size
-    samples_per_window = (vad_window_length * sample_rate) // 1000
-
-    # Trim the end of the audio to have a multiple of the window size
-    wav = wav[:len(wav) - (len(wav) % samples_per_window)]
-
-    # Convert the float waveform to 16-bit mono PCM
-    pcm_wave = struct.pack("%dh" % len(wav), *(np.round(wav * int16_max)).astype(np.int16))
-
-    # Perform voice activation detection
-    voice_flags = []
-    vad = webrtcvad.Vad(mode=3)
-    for window_start in range(0, len(wav), samples_per_window):
-        window_end = window_start + samples_per_window
-        voice_flags.append(vad.is_speech(pcm_wave[window_start * 2:window_end * 2],
-                                         sample_rate=sample_rate))
-    voice_flags = np.array(voice_flags)
-
-    # Smooth the voice detection with a moving average
-    def moving_average(array, width):
-        array_padded = np.concatenate((np.zeros((width - 1) // 2), array, np.zeros(width // 2)))
-        ret = np.cumsum(array_padded, dtype=float)
-        ret[width:] = ret[width:] - ret[:-width]
-        return ret[width - 1:] / width
-
-    audio_mask = moving_average(voice_flags, vad_moving_average_width)
-    audio_mask = np.round(audio_mask).astype(np.bool)
-
-    # Dilate the voiced regions
-    audio_mask = binary_dilation(audio_mask, np.ones(vad_max_silence_length + 1))
-    audio_mask = np.repeat(audio_mask, samples_per_window)
-
-    return wav[audio_mask == True]
-
-
-def normalize_volume(wav, target_dBFS, increase_only=False, decrease_only=False):
-    if increase_only and decrease_only:
-        raise ValueError("Both increase only and decrease only are set")
-    dBFS_change = target_dBFS - 10 * np.log10(np.mean(wav ** 2))
-    if (dBFS_change < 0 and increase_only) or (dBFS_change > 0 and decrease_only):
-        return wav
-    return wav * (10 ** (dBFS_change / 20))
 
 
 def ls(path):
@@ -143,13 +89,6 @@ def linear_to_mel(spectrogram):
     return librosa.feature.melspectrogram(
         S=spectrogram, sr=sample_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin)
 
-def normalize(S):
-    return np.clip((S - min_level_db) / -min_level_db, 0, 1)
-
-
-def denormalize(S):
-    return (np.clip(S, 0, 1) * -min_level_db) + min_level_db
-
 
 def amp_to_db(x):
     return 20 * np.log10(np.maximum(1e-5, x))
@@ -158,17 +97,6 @@ def amp_to_db(x):
 def db_to_amp(x):
     return np.power(10.0, x * 0.05)
 
-
-def spectrogram(y):
-    D = stft(y)
-    S = amp_to_db(np.abs(D)) - ref_level_db
-    return normalize(S)
-
-
-def melspectrogram(y):
-    D = stft(y)
-    S = amp_to_db(linear_to_mel(np.abs(D)))
-    return normalize(S)
 
 
 def stft(y):
@@ -198,15 +126,15 @@ def decode_mu_law(y, mu, from_labels=True):
     x = np.sign(y) / mu * ((1 + mu) ** np.abs(y) - 1)
     return x
 
-def reconstruct_waveform(mel, n_iter=32):
-    """Uses Griffin-Lim phase reconstruction to convert from a normalized
-    mel spectrogram back into a waveform."""
-    denormalized = denormalize(mel)
-    amp_mel = db_to_amp(denormalized)
-    S = librosa.feature.inverse.mel_to_stft(
-        amp_mel, power=1, sr=sample_rate,
-        n_fft=n_fft, fmin=fmin)
-    wav = librosa.core.griffinlim(
-        S, n_iter=n_iter,
-        hop_length=hop_length, win_length=win_length)
-    return wav
+# def reconstruct_waveform(mel, n_iter=32):
+#     """Uses Griffin-Lim phase reconstruction to convert from a normalized
+#     mel spectrogram back into a waveform."""
+#     denormalized = denormalize(mel)
+#     amp_mel = db_to_amp(denormalized)
+#     S = librosa.feature.inverse.mel_to_stft(
+#         amp_mel, power=1, sr=sample_rate,
+#         n_fft=n_fft, fmin=fmin)
+#     wav = librosa.core.griffinlim(
+#         S, n_iter=n_iter,
+#         hop_length=hop_length, win_length=win_length)
+#     return wav
