@@ -36,6 +36,6 @@ for spkr in range(opt.n_spkrs):
             fmin=fmin,
             fmax=fmax,
             center=False
-        )
+        ).squeeze(0)
 
 pickle.dump(feats,open('%s/%s.pickle'%(opt.dataset, opt.model_name),'wb'))
