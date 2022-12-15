@@ -78,7 +78,7 @@ parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first 
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--decay_epoch", type=int, default=50, help="epoch from which to start lr decay")
 parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
-parser.add_argument("--img_height", type=int, default=128, help="size of image height")
+parser.add_argument("--img_height", type=int, default=80, help="size of image height")
 parser.add_argument("--img_width", type=int, default=128, help="size of image width")
 parser.add_argument("--channels", type=int, default=1, help="number of image channels")
 parser.add_argument("--sample_interval", type=int, default=100, help="interval between saving generator samples")
@@ -134,12 +134,14 @@ if cuda:
 
 if opt.epoch != 0:
     # Load pretrained models
+    print("Loading Pre-Trained Models... ")
     encoder.load_state_dict(torch.load("saved_models/%s/encoder_%d.pth" % (opt.model_name, opt.epoch)))
     G1.load_state_dict(torch.load("saved_models/%s/G1_%d.pth" % (opt.model_name, opt.epoch)))
     G2.load_state_dict(torch.load("saved_models/%s/G2_%d.pth" % (opt.model_name, opt.epoch)))
     D1.load_state_dict(torch.load("saved_models/%s/D1_%d.pth" % (opt.model_name, opt.epoch)))
     D2.load_state_dict(torch.load("saved_models/%s/D2_%d.pth" % (opt.model_name, opt.epoch)))
 else:
+    print("Training from scratch... ")
     # Initialize weights
     encoder.apply(weights_init_normal)
     G1.apply(weights_init_normal)
@@ -233,6 +235,8 @@ for epoch in range(opt.epoch, opt.n_epochs):
         recon_X1 = G1(Z1)
         recon_X2 = G2(Z2)
 
+        # print(recon_X1.shape, X1.shape, Z1.shape, Z2.shape)
+
         # Translate speech
         fake_X1 = G1(Z2)
         fake_X2 = G2(Z1)
@@ -303,8 +307,22 @@ for epoch in range(opt.epoch, opt.n_epochs):
         losses['G'].append(loss_G.item())
         losses['D'].append((loss_D1 + loss_D2).item())
 
-        wandb.log({"G_loss": loss_G.item()})
-        wandb.log({"D_loss": (loss_D1 + loss_D2).item()})
+        # --------------
+        #  Log Progress Wandb
+        # --------------
+
+        wandb.log({"G_loss": loss_G.item(), "epoch": epoch})
+        wandb.log({"D_loss": (loss_D1 + loss_D2).item(), "epoch": epoch})
+
+        wandb.log({"GAN_loss_A": loss_GAN_1.item(), "epoch": epoch})
+        wandb.log({"GAN_loss_B": loss_GAN_2.item(), "epoch": epoch})
+        wandb.log({"Cyclic_loss_A": loss_cyc_1.item(), "epoch": epoch})
+        wandb.log({"Cyclic_loss_B": loss_cyc_2.item(), "epoch": epoch})
+        wandb.log({"KL_loss_A": loss_KL_1.item(), "epoch": epoch})
+        wandb.log({"KL_loss_B": loss_KL_2.item(), "epoch": epoch})
+        wandb.log({"ID_loss_A": loss_ID_1.item(), "epoch": epoch})
+        wandb.log({"ID_loss_B": loss_ID_2.item(), "epoch": epoch})
+        wandb.log({"Feature_loss": loss_feat.item(), "epoch": epoch})
 
         # update progress bar
         progress.set_description("[Epoch %d/%d] [D loss: %f] [G loss: %f] "

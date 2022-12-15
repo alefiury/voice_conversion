@@ -112,7 +112,8 @@ class Generator(nn.Module):
             dim = dim // 2
 
         # Output layer
-        layers += [nn.ReflectionPad2d(3), nn.Conv2d(dim, out_channels, 7), nn.Tanh()]
+        # layers += [nn.ReflectionPad2d(3), nn.Conv2d(dim, out_channels, 7), nn.Tanh()]
+        layers += [nn.ReflectionPad2d(3), nn.Conv2d(dim, out_channels, 7), nn.Sigmoid()] # Sigmoid to model distributions [0, 1] -> Normalized Mel Spectrogram
 
         self.model_blocks = nn.Sequential(*layers)
 

@@ -24,7 +24,9 @@ for spkr in range(opt.n_spkrs):
     feats[spkr] = [None]*len(wavs)
     for i, wav in tqdm(enumerate(wavs), total=len(wavs), desc="spkr_%d"%(spkr+1)):
         sample = preprocess_wav('%s/spkr_%s/%s'%(opt.dataset, spkr+1, wav))
-        y = torch.FloatTensor(sample.astype(np.float32))
+        y = torch.FloatTensor(sample)
+        y /= torch.abs(y).max()
+
         y = y.unsqueeze(0)
         feats[spkr][i] = mel_spectrogram(
             y=y,
@@ -35,7 +37,10 @@ for spkr in range(opt.n_spkrs):
             win_size=win_length,
             fmin=fmin,
             fmax=fmax,
-            center=False
+            center=False,
+            max_min_norm=max_min_norm,
+            max_value=max_value,
+            min_value=min_value
         ).squeeze(0)
 
 pickle.dump(feats,open('%s/%s.pickle'%(opt.dataset, opt.model_name),'wb'))

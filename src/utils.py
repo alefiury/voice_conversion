@@ -5,6 +5,7 @@
 from scipy.ndimage.morphology import binary_dilation
 import os
 import math
+import torch
 import numpy as np
 from pathlib import Path
 from typing import Optional, Union
@@ -12,12 +13,15 @@ import librosa
 import struct
 from params import *
 from scipy.signal import lfilter
+import matplotlib.pyplot as plt
 
 try:
     import webrtcvad
 except:
     warn("Unable to import 'webrtcvad'. This package enables noise removal and is recommended.")
     webrtcvad=None
+
+from hifi_gan import Generator as Generator_HiFi
 
 int16_max = (2 ** 15) - 1
 
@@ -44,9 +48,18 @@ def preprocess_wav(
 
     # Resample the wav if needed
     if source_sr is not None and source_sr != sample_rate:
-        wav = librosa.resample(wav, source_sr, sample_rate)
+        wav = librosa.resample(y=wav, orig_sr=source_sr, target_sr=sample_rate, res_type="soxr_vhq")
 
     return wav
+
+
+def normalize_volume(wav, target_dBFS, increase_only=False, decrease_only=False):
+    if increase_only and decrease_only:
+        raise ValueError("Both increase only and decrease only are set")
+    dBFS_change = target_dBFS - 10 * np.log10(np.mean(wav ** 2))
+    if (dBFS_change < 0 and increase_only) or (dBFS_change > 0 and decrease_only):
+        return wav
+    return wav * (10 ** (dBFS_change / 20))
 
 
 def ls(path):
@@ -76,6 +89,10 @@ def split_signal(x):
     fine = unsigned % 256
     return coarse, fine
 
+def to_numpy(batch):
+    batch = batch.detach().cpu().numpy()
+    batch = np.squeeze(batch)
+    return batch
 
 def combine_signal(coarse, fine):
     return coarse * 256 + fine - 2**15
@@ -96,8 +113,6 @@ def amp_to_db(x):
 
 def db_to_amp(x):
     return np.power(10.0, x * 0.05)
-
-
 
 def stft(y):
     return librosa.stft(
@@ -126,15 +141,69 @@ def decode_mu_law(y, mu, from_labels=True):
     x = np.sign(y) / mu * ((1 + mu) ** np.abs(y) - 1)
     return x
 
-# def reconstruct_waveform(mel, n_iter=32):
-#     """Uses Griffin-Lim phase reconstruction to convert from a normalized
-#     mel spectrogram back into a waveform."""
-#     denormalized = denormalize(mel)
-#     amp_mel = db_to_amp(denormalized)
-#     S = librosa.feature.inverse.mel_to_stft(
-#         amp_mel, power=1, sr=sample_rate,
-#         n_fft=n_fft, fmin=fmin)
-#     wav = librosa.core.griffinlim(
-#         S, n_iter=n_iter,
-#         hop_length=hop_length, win_length=win_length)
-#     return wav
+def reconstruct_waveform(mel, n_iter=32):
+    """Uses Griffin-Lim phase reconstruction to convert from a normalized
+    mel spectrogram back into a waveform."""
+    # denormalized = denormalize(mel)
+    # amp_mel = db_to_amp(denormalized)
+    amp_mel = db_to_amp(mel)
+    S = librosa.feature.inverse.mel_to_stft(
+        amp_mel,
+        power=1,
+        sr=sample_rate,
+        n_fft=n_fft,
+        fmin=fmin
+    )
+
+    wav = librosa.core.griffinlim(
+        S,
+        n_iter=n_iter,
+        hop_length=hop_length,
+        win_length=win_length
+    )
+
+    return wav
+
+def load_checkpoint(filepath, device):
+    assert os.path.isfile(filepath)
+    print("Loading '{}'".format(filepath))
+    checkpoint_dict = torch.load(filepath, map_location=device)
+    print("Complete.")
+    return checkpoint_dict
+
+
+def inference_hifigan(mel, checkpoint_file, config, device):
+    generator = Generator_HiFi(config).to(device)
+
+    state_dict_g = load_checkpoint(checkpoint_file, device)
+    generator.load_state_dict(state_dict_g['generator'])
+
+    generator.eval()
+    generator.remove_weight_norm()
+    with torch.no_grad():
+        mel = torch.Tensor(mel).to(device)
+        y_g_hat = generator(mel)
+        audio = y_g_hat.squeeze()
+        audio = audio * MAX_WAV_VALUE
+        audio = audio.cpu().numpy().astype('int16')
+
+    return audio
+
+def plot_mel_transfer_infer(save_path, mel_in, mel_out):
+    """Visualises melspectrogram style transfer in inference, shows total input and output"""
+    fig, ax = plt.subplots(nrows=2, ncols=1, sharey=True)
+
+    ax[0].imshow(mel_in, interpolation="None", aspect='auto')
+    ax[0].set(title='Input')
+    ax[0].set_ylabel('Mels')
+    ax[0].axes.xaxis.set_ticks([])
+
+    ax[1].imshow(mel_out, interpolation="None", aspect='auto')
+    ax[1].set(title='Output')
+    ax[1].set_ylabel('Mels')
+    ax[1].set_xlabel('Frames')
+
+    ax[0].invert_yaxis()
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
